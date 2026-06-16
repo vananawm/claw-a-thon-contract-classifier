@@ -30,6 +30,10 @@ os.makedirs(RUNS_DIR, exist_ok=True)
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 80 * 1024 * 1024  # 80MB
 
+# Màu nhãn (pill) và màu tiêu đề nhóm theo từng category
+PILL = {C.CAT_SIM: "p0", C.CAT_NONMATERIAL: "p0", C.CAT_KEY: "p1", C.CAT_NONE: "p2"}
+GRP  = {C.CAT_SIM: "g0", C.CAT_NONMATERIAL: "g0", C.CAT_KEY: "g1", C.CAT_NONE: "g2"}
+
 def safe_name(filename):
     """Giữ tên file (kể cả tiếng Việt), chỉ loại bỏ ký tự đường dẫn."""
     name = os.path.basename(filename or "").replace("\\", "_").replace("/", "_").strip()
@@ -65,15 +69,34 @@ PAGE = """
  .dl a{display:inline-block;margin:6px 10px 0 0;background:#111827;color:#fff;text-decoration:none;padding:9px 16px;border-radius:9px;font-size:14px}
  .pill{font-size:12px;border-radius:20px;padding:2px 9px}
  .p0{background:#dcfce7;color:#166534}.p1{background:#fef3c7;color:#92400e}.p2{background:#f3f4f6;color:#374151}
+ .head{display:flex;align-items:center;gap:14px;margin-bottom:4px}
+ .head h1{font-size:26px}
+ .opt{font-size:12px;font-weight:600;color:#0b7a3b;background:#dcfce7;border-radius:20px;padding:2px 10px;margin-left:6px}
+ .note-m{color:#b91c1c;font-weight:600}.note-n{color:#374151}
 </style></head><body><div class="wrap">
-<h1>Agent Phân Loại Hợp Đồng</h1>
-<p class="sub">Đối chiếu hợp đồng với template chuẩn · 3 nhóm: Giống ≥70% / Trọng yếu / Không theo template</p>
+<div class="head">
+  <svg width="62" height="62" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
+    <rect width="72" height="72" rx="16" fill="#0E9F43"/>
+    <rect x="16" y="13" width="30" height="44" rx="5" fill="#ffffff" opacity="0.4" transform="rotate(-7 31 35)"/>
+    <rect x="19" y="14" width="31" height="44" rx="5" fill="#ffffff"/>
+    <rect x="24" y="20" width="14" height="5" rx="2.5" fill="#13B24B"/>
+    <rect x="24" y="29" width="21" height="3.4" rx="1.7" fill="#D7DEDA"/>
+    <rect x="24" y="36" width="21" height="3.4" rx="1.7" fill="#D7DEDA"/>
+    <rect x="24" y="43" width="15" height="3.4" rx="1.7" fill="#D7DEDA"/>
+    <rect x="46" y="24" width="12" height="7" rx="2" fill="#16A34A"/>
+    <rect x="46" y="33" width="12" height="7" rx="2" fill="#F59E0B"/>
+    <circle cx="50" cy="50" r="11" fill="#0E9F43" stroke="#ffffff" stroke-width="2.5"/>
+    <path d="M45 50 l3.5 3.5 6.5 -7" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <h1>Agent Phân Loại Hợp Đồng</h1>
+</div>
+<p class="sub">Đối chiếu hợp đồng với template &amp; nhận diện hợp đồng trọng yếu bằng model Qwen. Có thể chạy không cần template.</p>
 
 {% if not result %}
 <form method="post" action="{{ url_for('classify') }}" enctype="multipart/form-data">
   <div class="card">
-    <h2>1) Template / Hợp đồng mẫu</h2>
-    <p class="hint">Bộ template chuẩn để đối chiếu (.docx, .doc, .pdf). Có thể upload nhiều file.</p>
+    <h2>1) Template / Hợp đồng mẫu <span class="opt">Tùy chọn</span></h2>
+    <p class="hint">Bộ template chuẩn để đối chiếu (.docx, .doc, .pdf). <b>Không bắt buộc</b> — nếu bỏ trống, agent chỉ phân loại trọng yếu / không trọng yếu.</p>
     <input type="file" name="templates" multiple accept=".docx,.doc,.pdf,.txt,.md">
     {% if stored %}
       <div class="row"><input type="checkbox" name="use_stored" id="us" checked>
@@ -88,28 +111,30 @@ PAGE = """
     <p class="hint">Các hợp đồng cần kiểm tra (.docx, .doc, .pdf). Có thể upload nhiều file.</p>
     <input type="file" name="contracts" multiple required accept=".docx,.doc,.pdf,.txt,.md">
   </div>
-  <button class="btn" type="submit">Phân loại</button>
+  <button class="btn" type="submit">Phân tích</button>
 </form>
 {% else %}
   <div class="card">
     <h2>Kết quả phân loại</h2>
-    <p class="hint">{{ results|length }} hợp đồng · {{ n_templates }} template đối chiếu · {{ run_id }}</p>
-    {% for cat, cls in [(cats[0],'g0'),(cats[1],'g1'),(cats[2],'g2')] %}
-      <div class="grp {{cls}}">{{ cat }} ({{ by_cat[cat]|length }})</div>
+    <p class="hint">{{ results|length }} hợp đồng · {{ n_templates }} template đối chiếu{% if not has_templates %} (không dùng template){% endif %} · {{ run_id }}</p>
+    {% for cat in cats %}
+      <div class="grp {{ grp[cat] }}">{{ cat }} ({{ by_cat[cat]|length }})</div>
       {% if by_cat[cat] %}
         <div class="chips">{% for n in by_cat[cat] %}<span>{{ n }}</span>{% endfor %}</div>
       {% else %}<p class="hint">(trống)</p>{% endif %}
     {% endfor %}
-    <table><tr><th>Hợp đồng</th><th>Template giống nhất</th><th>% giống</th><th>Nhóm</th><th>Ghi chú (AI)</th></tr>
+    <table><tr><th>Hợp đồng</th>{% if has_templates %}<th>Template giống nhất</th><th>% giống</th>{% endif %}<th>Nhóm</th><th>Loại (AI)</th><th>Quy trình review</th></tr>
     {% for r in results %}<tr>
-      <td>{{ r.name }}</td><td>{{ r.best_tpl }}</td><td>{{ r.sim }}%</td>
-      <td><span class="pill {{ 'p0' if r.cat==cats[0] else 'p1' if r.cat==cats[1] else 'p2' }}">{{ r.cat }}</span></td>
-      <td>{% if r.loai %}<b>{{ r.loai }}</b>{% endif %}{% if r.ly_do %} — {{ r.ly_do }}{% endif %}</td>
+      <td>{{ r.name }}</td>
+      {% if has_templates %}<td>{{ r.best_tpl }}</td><td>{{ r.sim }}%</td>{% endif %}
+      <td><span class="pill {{ pill[r.cat] }}">{{ r.cat }}</span></td>
+      <td>{% if r.loai %}<b>{{ r.loai }}</b>{% endif %}{% if r.ly_do %}<br><span class="hint">{{ r.ly_do }}</span>{% endif %}</td>
+      <td class="{{ 'note-m' if r.material else 'note-n' }}">{{ r.note }}</td>
     </tr>{% endfor %}</table>
     <div class="dl">
       <a href="{{ url_for('download', run_id=run_id, fname='report.xlsx') }}">⬇ Tải báo cáo Excel</a>
       <a href="{{ url_for('download', run_id=run_id, fname='ket_qua_phan_loai.zip') }}">⬇ Tải gói kết quả (zip)</a>
-      <a href="{{ url_for('home') }}" style="background:#0b7a3b">↺ Phân loại lô khác</a>
+      <a href="{{ url_for('home') }}" style="background:#0b7a3b">↺ Phân tích lô khác</a>
     </div>
   </div>
 {% endif %}
@@ -148,11 +173,10 @@ def classify():
             shutil.copy(p, os.path.join(TEMPLATE_STORE, safe_name(f.filename)))
 
     templates = C.build_templates(template_paths)
-    if not templates:
-        return render_template_string(PAGE, result=False, stored=stored_templates(),
-            _err=True), 200
+    has_templates = bool(templates)
+    cats = C.CATEGORIES_WITH_TEMPLATE if has_templates else C.CATEGORIES_NO_TEMPLATE
 
-    # 2) Lưu & phân loại hợp đồng
+    # 2) Lưu & phân loại hợp đồng (template TÙY CHỌN)
     cdir = os.path.join(run_dir, "_contracts"); os.makedirs(cdir, exist_ok=True)
     results = []
     for f in request.files.getlist("contracts"):
@@ -163,17 +187,18 @@ def classify():
 
     # 3) Sắp file vào folder theo nhóm + report + zip
     out_dir = os.path.join(run_dir, "ket_qua")
-    for c in C.CATEGORIES: os.makedirs(os.path.join(out_dir, c), exist_ok=True)
+    for c in cats: os.makedirs(os.path.join(out_dir, c), exist_ok=True)
     for path, r in results:
         shutil.copy(path, os.path.join(out_dir, r["cat"], r["name"]))
     res_list = [r for _, r in results]
-    write_report_xlsx(os.path.join(run_dir, "report.xlsx"), res_list, templates)
+    write_report_xlsx(os.path.join(run_dir, "report.xlsx"), res_list, cats)
     make_zip(os.path.join(run_dir, "ket_qua_phan_loai.zip"), out_dir,
              os.path.join(run_dir, "report.xlsx"))
 
-    by_cat = {c: [r["name"] for r in res_list if r["cat"] == c] for c in C.CATEGORIES}
+    by_cat = {c: [r["name"] for r in res_list if r["cat"] == c] for c in cats}
     return render_template_string(PAGE, result=True, results=res_list, by_cat=by_cat,
-        cats=C.CATEGORIES, n_templates=len(templates), run_id=run_id, stored=stored_templates())
+        cats=cats, grp=GRP, pill=PILL, has_templates=has_templates,
+        n_templates=len(templates), run_id=run_id, stored=stored_templates())
 
 @app.route("/download/<run_id>/<path:fname>")
 def download(run_id, fname):
@@ -182,19 +207,20 @@ def download(run_id, fname):
     if not os.path.exists(p): return "Không tìm thấy file", 404
     return send_file(p, as_attachment=True)
 
-def write_report_xlsx(path, results, templates):
+def write_report_xlsx(path, results, cats):
     try:
         import openpyxl
         from openpyxl.styles import Font, PatternFill
         wb = openpyxl.Workbook(); ws = wb.active; ws.title = "Tóm tắt"
-        by_cat = {c: [r["name"] for r in results if r["cat"] == c] for c in C.CATEGORIES}
+        by_cat = {c: [r["name"] for r in results if r["cat"] == c] for c in cats}
         ws.append(["Nhóm", "Số lượng", "Các hợp đồng"])
-        for c in C.CATEGORIES: ws.append([c, len(by_cat[c]), ", ".join(by_cat[c])])
+        for c in cats: ws.append([c, len(by_cat[c]), ", ".join(by_cat[c])])
         ws2 = wb.create_sheet("Chi tiết")
-        ws2.append(["Hợp đồng", "Tiêu đề", "Template giống nhất", "% giống", "Nhóm", "Loại (AI)", "Lý do (AI)"])
+        ws2.append(["Hợp đồng", "Tiêu đề", "Template giống nhất", "% giống", "Nhóm",
+                    "Loại (AI)", "Lý do (AI)", "Quy trình review"])
         for r in results:
             ws2.append([r["name"], r["title"], r["best_tpl"], r["sim"], r["cat"],
-                        r.get("loai", ""), r.get("ly_do", "")])
+                        r.get("loai", ""), r.get("ly_do", ""), r.get("note", "")])
         for w in (ws, ws2):
             for cell in w[1]:
                 cell.font = Font(bold=True); cell.fill = PatternFill("solid", fgColor="D9EAD3")

@@ -4,10 +4,12 @@
 classifier.py — Lõi (engine) phân loại hợp đồng dùng chung cho cả
 bản chạy theo folder (classify_contracts.py) và bản web upload (app.py).
 
-Phân loại (xét theo thứ tự):
-  1. Giống từ 70% trở lên   : độ giống template tốt nhất >= 70%
-  2. Hợp đồng trọng yếu      : độ giống < 70% VÀ thuộc loại NDA / License
-  3. Không theo template     : các trường hợp còn lại
+Template là TÙY CHỌN:
+  - CÓ template: 1) Giống từ 70% trở lên  2) Hợp đồng trọng yếu  3) Không theo template
+  - KHÔNG template: chỉ phân  1) Hợp đồng trọng yếu  2) Hợp đồng không trọng yếu
+Mọi hợp đồng đều được gắn nhãn trọng yếu/không và ghi chú quy trình review.
+Việc nhận diện trọng yếu dựa trên DANH SÁCH hợp đồng trọng yếu của công ty (MATERIAL_LIST),
+ưu tiên model Qwen (GreenNode MaaS), fallback dò từ khóa khi không gọi được model.
 """
 
 import os, re, json, subprocess, tempfile, difflib
@@ -15,10 +17,19 @@ import os, re, json, subprocess, tempfile, difflib
 # ---------- Cấu hình ----------
 THRESHOLD = 70.0   # % ngưỡng "giống template"
 
-CAT_SIM  = "Giống từ 70% trở lên"
-CAT_KEY  = "Hợp đồng trọng yếu"
-CAT_NONE = "Không theo template"
-CATEGORIES = [CAT_SIM, CAT_KEY, CAT_NONE]
+CAT_SIM         = "Giống từ 70% trở lên"
+CAT_KEY         = "Hợp đồng trọng yếu"
+CAT_NONE        = "Không theo template"
+CAT_NONMATERIAL = "Hợp đồng không trọng yếu"
+# Có template: phân theo template (giữ nguyên logic so sánh cũ)
+CATEGORIES_WITH_TEMPLATE = [CAT_SIM, CAT_KEY, CAT_NONE]
+# Không upload template: chỉ phân trọng yếu / không trọng yếu
+CATEGORIES_NO_TEMPLATE   = [CAT_KEY, CAT_NONMATERIAL]
+CATEGORIES = CATEGORIES_WITH_TEMPLATE   # tương thích ngược
+
+# Ghi chú quy trình theo mức độ trọng yếu
+NOTE_MATERIAL    = "Bắt buộc phải có legal review"
+NOTE_NONMATERIAL = "Review theo quy trình được ban hành"
 
 # --- Model GreenNode MaaS (OpenAI-compatible) để nhận diện hợp đồng trọng yếu ---
 LLM_BASE_URL = os.environ.get("GREENNODE_BASE_URL", "https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1")
@@ -26,12 +37,44 @@ LLM_API_KEY  = os.environ.get("GREENNODE_API_KEY", "")
 LLM_MODEL    = os.environ.get("GREENNODE_MODEL", "")  # để trống = tự dò model Qwen đang bật
 _RESOLVED_MODEL = None
 
-# Từ khóa nhận diện hợp đồng trọng yếu (xét ở tiêu đề + tên file)
+# DANH SÁCH HỢP ĐỒNG TRỌNG YẾU của công ty (tên + mô tả) — tiêu chí cho model nhận diện
+MATERIAL_LIST = [
+    ("Game licensing/sub-licensing", "HĐ với nhà phát triển (Tencent, Kingsoft, NetEase) để phát hành game theo khu vực."),
+    ("IP Collaboration / Sub-licensing", "Dùng IP bên thứ ba trong game (nhân vật anime, Marvel, nhạc)."),
+    ("Payment Gateway / Aggregator", "HĐ với ngân hàng, nhà mạng, ví điện tử (MoMo, ZaloPay) xử lý thanh toán trong game."),
+    ("Platform distribution", "Thỏa thuận với Apple App Store, Google Play, Steam, PlayStation/Xbox."),
+    ("Brand ambassador", "HĐ với người nổi tiếng/streamer lớn làm đại sứ thương hiệu."),
+    ("Esport tournament / sponsorship", "Tổ chức giải đấu lớn hoặc tài trợ (Red Bull, Oppo)."),
+    ("M&A và đầu tư", "Mua lại studio nhỏ hoặc nhận đầu tư."),
+    ("Joint venture (liên doanh)", "Liên doanh với đối tác địa phương ở nước khác."),
+    ("Banking & Credit Facility", "Khoản vay / hạn mức tín dụng tài trợ vận hành hoặc phí license."),
+    ("Related party transactions", "HĐ giữa công ty với công ty mẹ hoặc công ty con (yêu cầu audit/compliance)."),
+    ("IP Assignment", "Studio/freelancer/consultant tạo tài sản (art, code, nhạc) cho công ty."),
+    ("Strategic NDA", "NDA liên quan game chưa công bố, M&A, hoặc chia sẻ source code."),
+    ("Data Processing Agreement (DPA)", "Vendor chạm vào dữ liệu người dùng (ID, email, lịch sử thanh toán)."),
+    ("Data Transfer Agreement", "Cho phép chuyển dữ liệu người chơi qua biên giới."),
+    ("Exclusivity", "Cấm làm việc với đối thủ hoặc bắt buộc chỉ dùng một vendor."),
+    ("Non-Compete", "Cam kết không vào một thị trường/loại game trong một thời gian."),
+    ("Most Favored Nation (MFN)", "Cam kết không cho đối tác khác giá/điều khoản tốt hơn."),
+    ("MoU / Letter of Intent (LOI)", "Dù ghi 'non-binding' vẫn thường có điều khoản ràng buộc (độc quyền, bảo mật, luật áp dụng)."),
+    ("Settlement Agreement", "HĐ giải quyết tranh chấp/kiện tụng."),
+    ("Platform Developer Terms", "Điều khoản chuẩn của Apple/Google/Steam để phát hành & kiếm tiền."),
+    ("Unlimited Liability", "HĐ mà vendor không chịu giới hạn trách nhiệm của công ty."),
+    ("Waiving Sovereign Immunity / đổi Governing Law", "Đưa công ty vào luật vùng tài phán rủi ro cao hoặc từ bỏ quyền kiện tại VN/Singapore."),
+    ("Thời hạn ≥ 3 năm hoặc có auto-renew", "Bất kỳ HĐ nào ghi rõ thời hạn từ 3 năm trở lên hoặc có điều khoản tự động gia hạn."),
+]
+
+# Từ khóa fallback (chỉ dùng khi KHÔNG gọi được model) — xét ở tiêu đề + tên file
 KEYWORDS_MATERIAL = [
-    "non-disclosure", "nondisclosure", "non disclosure", "nda",
-    "confidentiality agreement", "thỏa thuận bảo mật", "thoả thuận bảo mật",
-    "hợp đồng bảo mật", "license agreement", "licensing agreement",
-    "hợp đồng cấp phép", "hợp đồng bản quyền", "hợp đồng license",
+    "non-disclosure","nondisclosure","nda","confidential","bảo mật","license","licens",
+    "cấp phép","bản quyền","sub-licens","sublicens","intellectual property","sở hữu trí tuệ",
+    "ip assignment","chuyển nhượng","payment gateway","cổng thanh toán","ví điện tử","momo","zalopay",
+    "distribution","app store","google play","steam","playstation","xbox","ambassador","đại sứ",
+    "esport","tournament","giải đấu","sponsorship","tài trợ","merger","acquisition","m&a","sáp nhập",
+    "investment","đầu tư","joint venture","liên doanh","credit facility","khoản vay","tín dụng",
+    "related party","data processing","dpa","data transfer","chuyển dữ liệu","exclusiv","độc quyền",
+    "non-compete","most favored nation","mfn","memorandum of understanding","mou","letter of intent",
+    "loi","settlement","unlimited liability","sovereign immunity","governing law","auto-renew","gia hạn",
 ]
 
 _VN = "àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ"
@@ -135,14 +178,17 @@ def detect_material_llm(title, text):
         return None
     try:
         import requests
+        listing = "\n".join(f"- {n}: {d}" for n, d in MATERIAL_LIST)
         prompt = (
-            "Bạn là trợ lý pháp chế. Đọc đoạn đầu hợp đồng và xác định đây có phải "
-            "HỢP ĐỒNG TRỌNG YẾU không. Hợp đồng trọng yếu là loại quan trọng cần rà soát kỹ: "
-            "NDA / thỏa thuận bảo mật, hợp đồng license / cấp phép / bản quyền, chuyển nhượng "
-            "sở hữu trí tuệ, hoặc hợp đồng có cam kết bảo mật/độc quyền mạnh.\n"
-            'Chỉ trả lời bằng JSON: {"material": true/false, "loai": "<loại ngắn gọn>", '
-            '"ly_do": "<1 câu>"}.\n\n'
-            f"Tiêu đề: {title}\nNội dung (rút gọn):\n{text[:3000]}"
+            "Bạn là trợ lý pháp chế của một công ty game. Dưới đây là DANH SÁCH các loại "
+            "HỢP ĐỒNG TRỌNG YẾU của công ty (kèm mô tả):\n"
+            f"{listing}\n\n"
+            "Đọc đoạn đầu hợp đồng bên dưới và xác định nó có thuộc MỘT trong các loại trọng yếu "
+            "ở trên không (dựa trên nội dung/bản chất, không chỉ tên gọi). Nếu có, ghi rõ thuộc loại nào.\n"
+            'Chỉ trả lời bằng JSON: {"material": true/false, '
+            '"loai": "<tên loại theo danh sách, hoặc loại hợp đồng nếu không trọng yếu>", '
+            '"ly_do": "<1 câu ngắn giải thích>"}.\n\n'
+            f"Tiêu đề: {title}\nNội dung (rút gọn):\n{text[:3500]}"
         )
         r = requests.post(
             f"{LLM_BASE_URL}/chat/completions",
@@ -173,7 +219,10 @@ def build_templates(template_paths):
     return templates
 
 def classify_text(name, text, templates, threshold=THRESHOLD):
-    """Phân loại 1 hợp đồng (đã có text) so với danh sách templates."""
+    """Phân loại 1 hợp đồng. Template TÙY CHỌN:
+       - Có template: phân theo % giống (logic cũ) + đánh dấu trọng yếu.
+       - Không template: chỉ phân trọng yếu / không trọng yếu.
+    Mọi hợp đồng đều được gắn nhãn trọng yếu/không và 1 ghi chú quy trình (note)."""
     tokens = normalize(text)
     title = first_line(text)
     best_name, best_sim = "-", 0.0
@@ -182,21 +231,28 @@ def classify_text(name, text, templates, threshold=THRESHOLD):
         if s > best_sim:
             best_sim, best_name = s, tpl["name"]
 
-    loai = ly_do = ""
-    if best_sim >= threshold:
-        cat, material = CAT_SIM, False
+    # Luôn xác định trọng yếu theo DANH SÁCH (ưu tiên Qwen, fallback dò từ khóa)
+    llm = detect_material_llm(title, text)
+    if llm is not None:
+        material, loai, ly_do = llm["material"], llm["loai"], llm["ly_do"]
     else:
-        # Chưa khớp template -> kiểm tra "trọng yếu": ưu tiên Qwen, fallback dò từ khóa
-        llm = detect_material_llm(title, text)
-        if llm is not None:
-            material, loai, ly_do = llm["material"], llm["loai"], llm["ly_do"]
+        material, loai, ly_do = is_material(title, name), "", ""
+
+    note = NOTE_MATERIAL if material else NOTE_NONMATERIAL
+
+    if templates:                       # có template -> giữ nguyên cách phân theo template
+        if best_sim >= threshold:
+            cat = CAT_SIM
+        elif material:
+            cat = CAT_KEY
         else:
-            material = is_material(title, name)
-        cat = CAT_KEY if material else CAT_NONE
+            cat = CAT_NONE
+    else:                               # không template -> chỉ trọng yếu / không trọng yếu
+        cat = CAT_KEY if material else CAT_NONMATERIAL
 
     return {"name": name, "title": title[:90], "best_tpl": best_name,
             "sim": round(best_sim, 1), "material": material,
-            "loai": loai, "ly_do": ly_do, "cat": cat}
+            "loai": loai, "ly_do": ly_do, "note": note, "cat": cat}
 
 def classify_file(path, templates, threshold=THRESHOLD, display_name=None):
     text = extract_text(path)
