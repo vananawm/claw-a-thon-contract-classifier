@@ -1,0 +1,25 @@
+# Bí mật — TUYỆT ĐỐI không đẩy lên GitHub
+.env
+*.env
+secrets*
+*client_secret*
+*api_key*
+
+# Output & dữ liệu chạy
+web_runs/
+template_store/
+Result/
+
+# Dữ liệu hợp đồng/template THẬT — KHÔNG đẩy lên GitHub public (lộ dữ liệu + vi phạm luật)
+contracts/
+template/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Hệ điều hành
+.DS_Store
+Thumbs.db
