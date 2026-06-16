@@ -1,6 +1,6 @@
 # Agent Phân Loại Hợp Đồng — Claw-a-thon 2026
 
-AI Agent giúp đội pháp chế **rà soát hàng loạt hợp đồng**: đối chiếu với bộ template
+AI Agent giúp **rà soát hàng loạt hợp đồng**: đối chiếu với bộ template
 chuẩn và **nhận diện hợp đồng trọng yếu** bằng model **Qwen 3.5 (GreenNode MaaS)**,
 rồi đề xuất quy trình review phù hợp.
 
