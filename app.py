@@ -13,6 +13,11 @@ Chạy local:   python app.py   ->   http://localhost:8080
 """
 
 import os, io, re, zipfile, datetime, tempfile, shutil
+try:                                  # nạp .env khi chạy local (trên cloud env có sẵn)
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
 from flask import Flask, request, render_template_string, send_file, redirect, url_for
 import classifier as C
 
@@ -95,10 +100,11 @@ PAGE = """
         <div class="chips">{% for n in by_cat[cat] %}<span>{{ n }}</span>{% endfor %}</div>
       {% else %}<p class="hint">(trống)</p>{% endif %}
     {% endfor %}
-    <table><tr><th>Hợp đồng</th><th>Template giống nhất</th><th>% giống</th><th>Nhóm</th></tr>
+    <table><tr><th>Hợp đồng</th><th>Template giống nhất</th><th>% giống</th><th>Nhóm</th><th>Ghi chú (AI)</th></tr>
     {% for r in results %}<tr>
       <td>{{ r.name }}</td><td>{{ r.best_tpl }}</td><td>{{ r.sim }}%</td>
       <td><span class="pill {{ 'p0' if r.cat==cats[0] else 'p1' if r.cat==cats[1] else 'p2' }}">{{ r.cat }}</span></td>
+      <td>{% if r.loai %}<b>{{ r.loai }}</b>{% endif %}{% if r.ly_do %} — {{ r.ly_do }}{% endif %}</td>
     </tr>{% endfor %}</table>
     <div class="dl">
       <a href="{{ url_for('download', run_id=run_id, fname='report.xlsx') }}">⬇ Tải báo cáo Excel</a>
@@ -110,6 +116,11 @@ PAGE = """
 <p class="sub" style="margin-top:24px;font-size:12px">⚠️ Chỉ dùng hợp đồng công khai / giả lập / đã ẩn danh — không dùng dữ liệu thật của khách hàng hay nội bộ.</p>
 </div></body></html>
 """
+
+@app.route("/health")
+def health():
+    # AgentBase Runtime gọi endpoint này để đánh dấu agent ACTIVE
+    return "ok", 200
 
 @app.route("/")
 def home():
@@ -180,9 +191,10 @@ def write_report_xlsx(path, results, templates):
         ws.append(["Nhóm", "Số lượng", "Các hợp đồng"])
         for c in C.CATEGORIES: ws.append([c, len(by_cat[c]), ", ".join(by_cat[c])])
         ws2 = wb.create_sheet("Chi tiết")
-        ws2.append(["Hợp đồng", "Tiêu đề", "Template giống nhất", "% giống", "Nhóm"])
+        ws2.append(["Hợp đồng", "Tiêu đề", "Template giống nhất", "% giống", "Nhóm", "Loại (AI)", "Lý do (AI)"])
         for r in results:
-            ws2.append([r["name"], r["title"], r["best_tpl"], r["sim"], r["cat"]])
+            ws2.append([r["name"], r["title"], r["best_tpl"], r["sim"], r["cat"],
+                        r.get("loai", ""), r.get("ly_do", "")])
         for w in (ws, ws2):
             for cell in w[1]:
                 cell.font = Font(bold=True); cell.fill = PatternFill("solid", fgColor="D9EAD3")

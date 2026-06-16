@@ -10,7 +10,7 @@ Phân loại (xét theo thứ tự):
   3. Không theo template     : các trường hợp còn lại
 """
 
-import os, re, subprocess, tempfile, difflib
+import os, re, json, subprocess, tempfile, difflib
 
 # ---------- Cấu hình ----------
 THRESHOLD = 70.0   # % ngưỡng "giống template"
@@ -19,6 +19,12 @@ CAT_SIM  = "Giống từ 70% trở lên"
 CAT_KEY  = "Hợp đồng trọng yếu"
 CAT_NONE = "Không theo template"
 CATEGORIES = [CAT_SIM, CAT_KEY, CAT_NONE]
+
+# --- Model GreenNode MaaS (OpenAI-compatible) để nhận diện hợp đồng trọng yếu ---
+LLM_BASE_URL = os.environ.get("GREENNODE_BASE_URL", "https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1")
+LLM_API_KEY  = os.environ.get("GREENNODE_API_KEY", "")
+LLM_MODEL    = os.environ.get("GREENNODE_MODEL", "")  # để trống = tự dò model Qwen đang bật
+_RESOLVED_MODEL = None
 
 # Từ khóa nhận diện hợp đồng trọng yếu (xét ở tiêu đề + tên file)
 KEYWORDS_MATERIAL = [
@@ -102,6 +108,60 @@ def is_material(title, name):
     blob = (title + " " + name).lower()
     return any(k in blob for k in KEYWORDS_MATERIAL)
 
+def _resolve_model():
+    """Xác định mã model để gọi: ưu tiên biến môi trường, nếu trống thì tự dò model
+    có chứa 'qwen' đang khả dụng qua /v1/models. Có cache để chỉ dò 1 lần."""
+    global _RESOLVED_MODEL
+    if LLM_MODEL:
+        return LLM_MODEL
+    if _RESOLVED_MODEL:
+        return _RESOLVED_MODEL
+    try:
+        import requests
+        r = requests.get(f"{LLM_BASE_URL}/models",
+                         headers={"Authorization": f"Bearer {LLM_API_KEY}"}, timeout=15)
+        r.raise_for_status()
+        ids = [m.get("id", "") for m in r.json().get("data", [])]
+        pick = next((i for i in ids if "qwen" in i.lower()), None) or (ids[0] if ids else None)
+        _RESOLVED_MODEL = pick or "qwen/qwen3-5-27b"
+    except Exception:
+        _RESOLVED_MODEL = "qwen/qwen3-5-27b"
+    return _RESOLVED_MODEL
+
+def detect_material_llm(title, text):
+    """Dùng model Qwen (GreenNode MaaS) xác định hợp đồng trọng yếu.
+    Trả về dict {material, loai, ly_do} nếu gọi được; None nếu không (sẽ fallback dò từ khóa)."""
+    if not LLM_API_KEY:
+        return None
+    try:
+        import requests
+        prompt = (
+            "Bạn là trợ lý pháp chế. Đọc đoạn đầu hợp đồng và xác định đây có phải "
+            "HỢP ĐỒNG TRỌNG YẾU không. Hợp đồng trọng yếu là loại quan trọng cần rà soát kỹ: "
+            "NDA / thỏa thuận bảo mật, hợp đồng license / cấp phép / bản quyền, chuyển nhượng "
+            "sở hữu trí tuệ, hoặc hợp đồng có cam kết bảo mật/độc quyền mạnh.\n"
+            'Chỉ trả lời bằng JSON: {"material": true/false, "loai": "<loại ngắn gọn>", '
+            '"ly_do": "<1 câu>"}.\n\n'
+            f"Tiêu đề: {title}\nNội dung (rút gọn):\n{text[:3000]}"
+        )
+        r = requests.post(
+            f"{LLM_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {LLM_API_KEY}", "Content-Type": "application/json"},
+            json={"model": _resolve_model(),
+                  "messages": [{"role": "user", "content": prompt}],
+                  "temperature": 0},
+            timeout=30,
+        )
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+        m = re.search(r"\{.*\}", content, re.S)
+        data = json.loads(m.group(0)) if m else {}
+        return {"material": bool(data.get("material")),
+                "loai": str(data.get("loai", "")),
+                "ly_do": str(data.get("ly_do", ""))}
+    except Exception:
+        return None
+
 # ---------- API cấp cao ----------
 def build_templates(template_paths):
     """Nhận list đường dẫn file template -> list dict {name, tokens}."""
@@ -121,15 +181,22 @@ def classify_text(name, text, templates, threshold=THRESHOLD):
         s = similarity(tokens, tpl["tokens"])
         if s > best_sim:
             best_sim, best_name = s, tpl["name"]
-    material = is_material(title, name)
+
+    loai = ly_do = ""
     if best_sim >= threshold:
-        cat = CAT_SIM
-    elif material:
-        cat = CAT_KEY
+        cat, material = CAT_SIM, False
     else:
-        cat = CAT_NONE
+        # Chưa khớp template -> kiểm tra "trọng yếu": ưu tiên Qwen, fallback dò từ khóa
+        llm = detect_material_llm(title, text)
+        if llm is not None:
+            material, loai, ly_do = llm["material"], llm["loai"], llm["ly_do"]
+        else:
+            material = is_material(title, name)
+        cat = CAT_KEY if material else CAT_NONE
+
     return {"name": name, "title": title[:90], "best_tpl": best_name,
-            "sim": round(best_sim, 1), "material": material, "cat": cat}
+            "sim": round(best_sim, 1), "material": material,
+            "loai": loai, "ly_do": ly_do, "cat": cat}
 
 def classify_file(path, templates, threshold=THRESHOLD, display_name=None):
     text = extract_text(path)

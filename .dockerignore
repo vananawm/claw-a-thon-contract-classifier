@@ -1,0 +1,10 @@
+.env
+.greennode.json
+web_runs/
+template_store/
+.git/
+__pycache__/
+*.pyc
+*.pyo
+.agentbase/
+*.log
