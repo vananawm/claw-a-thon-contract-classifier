@@ -31,3 +31,4 @@ venv/
 # Hệ điều hành
 .DS_Store
 Thumbs.db
+.agentbase/
