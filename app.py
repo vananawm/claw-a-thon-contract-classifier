@@ -73,7 +73,15 @@ PAGE = """
  .head h1{font-size:26px}
  .opt{font-size:12px;font-weight:600;color:#0b7a3b;background:#dcfce7;border-radius:20px;padding:2px 10px;margin-left:6px}
  .note-m{color:#b91c1c;font-weight:600}.note-n{color:#374151}
-</style></head><body><div class="wrap">
+ .overlay{display:none;position:fixed;inset:0;background:rgba(255,255,255,.85);z-index:50;align-items:center;justify-content:center;flex-direction:column;gap:14px}
+ .spin{width:46px;height:46px;border:5px solid #d1fae5;border-top-color:#0b7a3b;border-radius:50%;animation:sp .8s linear infinite}
+ @keyframes sp{to{transform:rotate(360deg)}}
+ .overlay p{color:#0b7a3b;font-weight:600;margin:0}
+ .summary{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14px;line-height:1.55}
+ .summary b{color:#0b7a3b}.summary ol{margin:8px 0 0;padding-left:20px}
+</style></head><body>
+<div class="overlay" id="ld"><div class="spin"></div><p>Agent đang xử lý…</p></div>
+<div class="wrap">
 <div class="head">
   <svg width="62" height="62" viewBox="0 0 72 72" xmlns="http://www.w3.org/2000/svg">
     <rect width="72" height="72" rx="16" fill="#0E9F43"/>
@@ -93,7 +101,7 @@ PAGE = """
 <p class="sub">Đối chiếu hợp đồng với template &amp; nhận diện hợp đồng trọng yếu bằng model Qwen. Có thể chạy không cần template.</p>
 
 {% if not result %}
-<form method="post" action="{{ url_for('classify') }}" enctype="multipart/form-data">
+<form method="post" action="{{ url_for('classify') }}" enctype="multipart/form-data" onsubmit="document.getElementById('ld').style.display='flex'">
   <div class="card">
     <h2>1) Template / Hợp đồng mẫu <span class="opt">Tùy chọn</span></h2>
     <p class="hint">Bộ template chuẩn để đối chiếu (.docx, .doc, .pdf). <b>Không bắt buộc</b> — nếu bỏ trống, agent chỉ phân loại trọng yếu / không trọng yếu.</p>
@@ -117,6 +125,20 @@ PAGE = """
   <div class="card">
     <h2>Kết quả phân loại</h2>
     <p class="hint">{{ results|length }} hợp đồng · {{ n_templates }} template đối chiếu{% if not has_templates %} (không dùng template){% endif %} · {{ run_id }}</p>
+    <div class="summary">
+      <b>Cách agent đã phân loại</b> — để bạn soát lại nhanh:
+      <ol>
+        <li>Đọc & trích xuất văn bản từ {{ results|length }} hợp đồng.</li>
+        {% if has_templates %}
+        <li>So khớp với {{ n_templates }} template, tính % tương đồng (chuẩn hóa bỏ qua ngày tháng/số/khoảng trắng). Hợp đồng đạt ≥70% xếp vào “Giống từ 70% trở lên”.</li>
+        {% else %}
+        <li>Bạn không upload template → bỏ qua bước so khớp, chỉ phân theo mức trọng yếu.</li>
+        {% endif %}
+        <li>Nhận diện <b>hợp đồng trọng yếu</b> theo danh sách của công ty {% if llm_used %}bằng model <b>Qwen (GreenNode MaaS)</b>{% else %}bằng dò từ khóa (chưa gọi được model){% endif %}. Lý do ghi ở cột “Loại (AI)”.</li>
+        <li>Gắn quy trình review: trọng yếu → bắt buộc legal review; còn lại → review theo quy trình ban hành.</li>
+      </ol>
+      👉 Hãy rà cột <b>Loại (AI)</b>{% if has_templates %} và <b>% giống</b>{% endif %} bên dưới để chắc chắn không nhầm lẫn; nếu sai, có thể điều chỉnh template hoặc bổ sung tiêu chí rồi chạy lại.
+    </div>
     {% for cat in cats %}
       <div class="grp {{ grp[cat] }}">{{ cat }} ({{ by_cat[cat]|length }})</div>
       {% if by_cat[cat] %}
@@ -196,8 +218,9 @@ def classify():
              os.path.join(run_dir, "report.xlsx"))
 
     by_cat = {c: [r["name"] for r in res_list if r["cat"] == c] for c in cats}
+    llm_used = any(r.get("loai") or r.get("ly_do") for r in res_list)
     return render_template_string(PAGE, result=True, results=res_list, by_cat=by_cat,
-        cats=cats, grp=GRP, pill=PILL, has_templates=has_templates,
+        cats=cats, grp=GRP, pill=PILL, has_templates=has_templates, llm_used=llm_used,
         n_templates=len(templates), run_id=run_id, stored=stored_templates())
 
 @app.route("/download/<run_id>/<path:fname>")
